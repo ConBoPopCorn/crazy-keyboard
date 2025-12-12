@@ -6,20 +6,32 @@
     <title>미친 키보드 서바이벌</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/phaser3-rex-plugins@1.1.57/dist/rexvirtualjoystickplugin.min.js"></script>
+    
     <style>
-        body { margin: 0; background: #222; overflow: hidden; touch-action: none; }
+        body { margin: 0; background: #222; overflow: hidden; touch-action: none; font-family: 'Malgun Gothic', sans-serif; }
+        
+        /* 로그인 화면 스타일 (게임 위에 덮어씌움) */
+        #loginOverlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
+        #nicknameInput { padding: 10px; font-size: 20px; text-align: center; width: 200px; margin-bottom: 10px; }
+        #joinBtn { padding: 10px 20px; font-size: 20px; cursor: pointer; background: #FFD700; border: none; font-weight: bold; }
     </style>
 </head>
 <body>
+    <div id="loginOverlay">
+        <h1 style="color:white; margin-bottom:20px;">미친 키보드 서바이벌</h1>
+        <input type="text" id="nicknameInput" placeholder="닉네임 입력 (최대 6글자)" maxlength="6">
+        <button id="joinBtn">게임 입장</button>
+    </div>
+
     <script>
         const config = {
             type: Phaser.AUTO,
-            scale: {
-                mode: Phaser.Scale.FIT,
-                autoCenter: Phaser.Scale.CENTER_BOTH,
-                width: 800,
-                height: 600
-            },
+            scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 800, height: 600 },
             backgroundColor: '#333333',
             physics: { default: 'arcade', arcade: { debug: false } },
             scene: { preload: preload, create: create, update: update }
@@ -27,50 +39,58 @@
 
         const game = new Phaser.Game(config);
 
-        let player;
+        // 전역 변수들
+        let player; 
         let otherPlayers;
         let cursors;
         let joyStick; 
         let socket;
-        let infoText;
-        let timerText;
+        let infoText, timerText;
         let keyMap = { left: 'left', right: 'right', up: 'up', down: 'down' };
         let timeLeft = 3;
+        let myNickname = ""; // 내 닉네임 저장용
+        let isGameStarted = false; // 게임 시작 여부
 
         function preload() {
-            // **중요 수정**: 플러그인을 여기서 직접 불러옵니다. (안전함)
             var url = 'https://cdn.jsdelivr.net/npm/phaser3-rex-plugins@1.1.57/dist/rexvirtualjoystickplugin.min.js';
             this.load.plugin('rexvirtualjoystickplugin', url, true);
         }
 
         function create() {
             const self = this;
-            this.socket = io();
-            this.otherPlayers = this.physics.add.group();
+            this.socket = io(); // 서버 연결
+            this.otherPlayers = this.physics.add.group(); // 다른 사람 그룹
 
-            // --- 조이스틱 생성 (위치 수정: 왼쪽 아래) ---
-            // 플러그인이 로드된 후 실행
+            // --- UI 이벤트 처리 (입장 버튼 클릭 시) ---
+            document.getElementById('joinBtn').addEventListener('click', function() {
+                const inputName = document.getElementById('nicknameInput').value;
+                if(inputName.trim() === "") { alert("닉네임을 입력하세요!"); return; }
+                
+                myNickname = inputName;
+                document.getElementById('loginOverlay').style.display = 'none'; // 로그인 창 숨기기
+                
+                // 서버에 "나 입장할래! 이름은 이거야" 라고 전송
+                self.socket.emit('join_game', myNickname);
+                isGameStarted = true; // 게임 시작
+            });
+
+            // 1. 조이스틱 설정 (초기엔 숨길 수도 있지만 일단 둠)
             joyStick = this.plugins.get('rexvirtualjoystickplugin').add(this, {
-                x: 120, // 위치를 조금 더 안쪽으로 (화면 잘림 방지)
-                y: 480,
-                radius: 80, // 크기 조금 키움
-                base: this.add.circle(0, 0, 80, 0x888888, 0.5), // 반투명 회색 바닥
-                thumb: this.add.circle(0, 0, 40, 0xcccccc, 0.9), // 흰색 손잡이
-                dir: '4dir',
-                forceMin: 16
-            }).on('update', dumpJoyStickState, this);
-
-            // PC용 키보드 설정
+                x: 120, y: 480, radius: 80,
+                base: this.add.circle(0, 0, 80, 0x888888, 0.5),
+                thumb: this.add.circle(0, 0, 40, 0xcccccc, 0.9),
+                dir: '4dir', forceMin: 16
+            });
             cursors = this.joyStickCursors = joyStick.createCursorKeys();
-            const actualCursors = this.input.keyboard.createCursorKeys();
+            this.actualCursors = this.input.keyboard.createCursorKeys();
 
-            // --- 소켓 통신 ---
+            // --- 서버 통신 ---
             this.socket.on('currentPlayers', function (players) {
                 Object.keys(players).forEach(function (id) {
                     if (players[id].playerId === self.socket.id) {
-                        addPlayer(self, players[id]);
+                        addPlayer(self, players[id]); // 나 생성
                     } else {
-                        addOtherPlayers(self, players[id]);
+                        addOtherPlayers(self, players[id]); // 남 생성
                     }
                 });
             });
@@ -79,10 +99,11 @@
                 addOtherPlayers(self, playerInfo);
             });
 
-            // 지난번 오류 수정 포함 (playerDisconnected 사용)
             this.socket.on('playerDisconnected', function (playerId) {
                 self.otherPlayers.getChildren().forEach(function (otherPlayer) {
                     if (playerId === otherPlayer.playerId) {
+                        // 텍스트(닉네임)도 같이 지워야 함!
+                        if(otherPlayer.nameText) otherPlayer.nameText.destroy();
                         otherPlayer.destroy();
                     }
                 });
@@ -92,35 +113,48 @@
                 self.otherPlayers.getChildren().forEach(function (otherPlayer) {
                     if (playerInfo.playerId === otherPlayer.playerId) {
                         otherPlayer.setPosition(playerInfo.x, playerInfo.y);
+                        // 닉네임도 같이 이동
+                        if(otherPlayer.nameText) {
+                            otherPlayer.nameText.setPosition(playerInfo.x, playerInfo.y - 40);
+                        }
                     }
                 });
             });
 
-            // UI 텍스트
-            infoText = this.add.text(400, 50, '현재 상태: 정상', { fontSize: '32px', fill: '#FFF' }).setOrigin(0.5);
-            timerText = this.add.text(400, 100, '다음 변경까지: 3초', { fontSize: '24px', fill: '#0F0' }).setOrigin(0.5);
-            this.add.text(400, 550, 'PC: 방향키 / 모바일: 조이스틱', { fontSize: '16px', fill: '#AAA' }).setOrigin(0.5);
-
-            this.time.addEvent({ delay: 1000, callback: updateTimer, callbackScope: this, loop: true });
+            // 안내 텍스트
+            infoText = this.add.text(400, 50, '', { fontSize: '32px', fill: '#FFF' }).setOrigin(0.5);
+            timerText = this.add.text(400, 100, '', { fontSize: '24px', fill: '#0F0' }).setOrigin(0.5);
             
-            this.actualCursors = actualCursors;
+            // 타이머 실행
+            this.time.addEvent({ delay: 1000, callback: updateTimer, callbackScope: this, loop: true });
         }
 
-        function dumpJoyStickState() {}
-
         function addPlayer(self, playerInfo) {
+            // 내 캐릭터
             self.player = self.add.rectangle(playerInfo.x, playerInfo.y, 40, 40, 0xFFFF00);
             self.physics.add.existing(self.player);
             self.player.body.setCollideWorldBounds(true);
+            
+            // 내 닉네임 (머리 위)
+            self.player.nameText = self.add.text(playerInfo.x, playerInfo.y - 40, playerInfo.name, {
+                fontSize: '16px', fill: '#FFFF00', align: 'center'
+            }).setOrigin(0.5);
         }
 
         function addOtherPlayers(self, playerInfo) {
+            // 다른 캐릭터
             const otherPlayer = self.add.rectangle(playerInfo.x, playerInfo.y, 40, 40, 0x0000FF);
             otherPlayer.playerId = playerInfo.playerId;
             self.otherPlayers.add(otherPlayer);
+
+            // 다른 사람 닉네임 (머리 위)
+            otherPlayer.nameText = self.add.text(playerInfo.x, playerInfo.y - 40, playerInfo.name, {
+                fontSize: '16px', fill: '#FFFFFF', align: 'center'
+            }).setOrigin(0.5);
         }
 
         function updateTimer() {
+            if(!isGameStarted) return; // 입장 전엔 타이머 멈춤
             timeLeft--;
             if (timeLeft <= 0) { timeLeft = 3; shuffleKeys(); }
             timerText.setText('다음 변경까지: ' + timeLeft + '초');
@@ -146,7 +180,7 @@
         }
 
         function update() {
-            if (this.player) {
+            if (this.player && isGameStarted) {
                 const speed = 300;
                 this.player.body.setVelocity(0);
 
@@ -159,6 +193,11 @@
                 if (right) movePlayer(this.player, keyMap.right, speed);
                 if (up) movePlayer(this.player, keyMap.up, speed);
                 if (down) movePlayer(this.player, keyMap.down, speed);
+
+                // **닉네임 따라다니기**
+                if(this.player.nameText) {
+                    this.player.nameText.setPosition(this.player.x, this.player.y - 40);
+                }
 
                 if (this.player.body.velocity.x !== 0 || this.player.body.velocity.y !== 0) {
                     this.socket.emit('playerMovement', { x: this.player.x, y: this.player.y });

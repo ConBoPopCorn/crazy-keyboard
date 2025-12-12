@@ -3,47 +3,51 @@ const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http);
 
-// 정적 파일 제공 (index.html 등을 보여줌)
 app.use(express.static(__dirname));
 
-// 접속한 플레이어들을 명단에 적어둠
-let players = {};
+let players = {}; // 접속한 플레이어 명단
 
 io.on('connection', (socket) => {
-    console.log('새로운 플레이어 접속: ' + socket.id);
+    console.log('클라이언트 접속 (아직 게임 참가 안함): ' + socket.id);
 
-    // 1. 새 플레이어 정보 생성
-    players[socket.id] = {
-        x: 400,
-        y: 300,
-        playerId: socket.id
-    };
+    // 1. [중요] 사용자가 '입장' 버튼을 눌러서 닉네임을 보냈을 때만 실행
+    socket.on('join_game', (nickname) => {
+        console.log('게임 참가: ' + nickname + ' (' + socket.id + ')');
 
-    // 2. 접속한 사람에게 "현재 있는 모든 플레이어 정보"를 줌
-    socket.emit('currentPlayers', players);
+        // 플레이어 정보 생성 (이름 추가됨!)
+        players[socket.id] = {
+            x: 400,
+            y: 300,
+            playerId: socket.id,
+            name: nickname // 닉네임 저장
+        };
 
-    // 3. 이미 있던 다른 사람들에게 "새 친구가 왔어!"라고 알림
-    socket.broadcast.emit('newPlayer', players[socket.id]);
+        // 접속한 사람에게: "현재 있는 모든 플레이어 정보 줄게"
+        socket.emit('currentPlayers', players);
 
-    // 4. 플레이어가 움직일 때마다
+        // 이미 있던 사람들에게: "새 친구(이름 포함)가 왔어!"
+        socket.broadcast.emit('newPlayer', players[socket.id]);
+    });
+
+    // 2. 플레이어 움직임
     socket.on('playerMovement', (movementData) => {
         if (players[socket.id]) {
             players[socket.id].x = movementData.x;
             players[socket.id].y = movementData.y;
-            // 다른 사람들에게 "얘 움직였어!"라고 알림
             socket.broadcast.emit('playerMoved', players[socket.id]);
         }
     });
 
-    // 5. 플레이어가 나갔을 때
+    // 3. 플레이어 퇴장
     socket.on('disconnect', () => {
-        console.log('플레이어 퇴장: ' + socket.id);
-        delete players[socket.id];
-        io.emit('disconnect', socket.id); // 모두에게 "얘 나갔어" 알림
+        console.log('연결 끊김: ' + socket.id);
+        if (players[socket.id]) {
+            delete players[socket.id];
+            io.emit('playerDisconnected', socket.id);
+        }
     });
 });
 
-// 서버를 3000번 포트에서 실행
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`서버가 ${PORT}번 포트에서 실행 중입니다!`);
