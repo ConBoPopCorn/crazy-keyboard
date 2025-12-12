@@ -6,7 +6,6 @@
     <title>미친 키보드 서바이벌</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/phaser3-rex-plugins@1.1.57/dist/rexvirtualjoystickplugin.min.js"></script>
     <style>
         body { margin: 0; background: #222; overflow: hidden; touch-action: none; }
     </style>
@@ -16,7 +15,7 @@
         const config = {
             type: Phaser.AUTO,
             scale: {
-                mode: Phaser.Scale.FIT, // 모바일 화면에 꽉 차게 맞춤
+                mode: Phaser.Scale.FIT,
                 autoCenter: Phaser.Scale.CENTER_BOTH,
                 width: 800,
                 height: 600
@@ -31,7 +30,7 @@
         let player;
         let otherPlayers;
         let cursors;
-        let joyStick; // 조이스틱 변수
+        let joyStick; 
         let socket;
         let infoText;
         let timerText;
@@ -39,7 +38,9 @@
         let timeLeft = 3;
 
         function preload() {
-            // 조이스틱 플러그인 로드 (URL 방식이라 여기서 할 건 없음)
+            // **중요 수정**: 플러그인을 여기서 직접 불러옵니다. (안전함)
+            var url = 'https://cdn.jsdelivr.net/npm/phaser3-rex-plugins@1.1.57/dist/rexvirtualjoystickplugin.min.js';
+            this.load.plugin('rexvirtualjoystickplugin', url, true);
         }
 
         function create() {
@@ -47,23 +48,23 @@
             this.socket = io();
             this.otherPlayers = this.physics.add.group();
 
-            // --- 조이스틱 생성 (화면 왼쪽 아래) ---
+            // --- 조이스틱 생성 (위치 수정: 왼쪽 아래) ---
+            // 플러그인이 로드된 후 실행
             joyStick = this.plugins.get('rexvirtualjoystickplugin').add(this, {
-                x: 100,
-                y: 500,
-                radius: 60,
-                base: this.add.circle(0, 0, 60, 0x888888, 0.5), // 회색 바닥
-                thumb: this.add.circle(0, 0, 30, 0xcccccc, 0.9), // 흰색 손잡이
-                dir: '4dir',   // 4방향 (8방향은 '8dir')
+                x: 120, // 위치를 조금 더 안쪽으로 (화면 잘림 방지)
+                y: 480,
+                radius: 80, // 크기 조금 키움
+                base: this.add.circle(0, 0, 80, 0x888888, 0.5), // 반투명 회색 바닥
+                thumb: this.add.circle(0, 0, 40, 0xcccccc, 0.9), // 흰색 손잡이
+                dir: '4dir',
                 forceMin: 16
             }).on('update', dumpJoyStickState, this);
 
-            // 커서 키(키보드)도 계속 사용 가능
+            // PC용 키보드 설정
             cursors = this.joyStickCursors = joyStick.createCursorKeys();
-            // 실제 키보드 입력과 조이스틱 입력을 합침
             const actualCursors = this.input.keyboard.createCursorKeys();
 
-            // --- 소켓 통신 (이전과 동일) ---
+            // --- 소켓 통신 ---
             this.socket.on('currentPlayers', function (players) {
                 Object.keys(players).forEach(function (id) {
                     if (players[id].playerId === self.socket.id) {
@@ -78,7 +79,8 @@
                 addOtherPlayers(self, playerInfo);
             });
 
-            this.socket.on('disconnect', function (playerId) {
+            // 지난번 오류 수정 포함 (playerDisconnected 사용)
+            this.socket.on('playerDisconnected', function (playerId) {
                 self.otherPlayers.getChildren().forEach(function (otherPlayer) {
                     if (playerId === otherPlayer.playerId) {
                         otherPlayer.destroy();
@@ -101,13 +103,10 @@
 
             this.time.addEvent({ delay: 1000, callback: updateTimer, callbackScope: this, loop: true });
             
-            // 전역 변수로 키보드도 쓸 수 있게 저장
             this.actualCursors = actualCursors;
         }
 
-        function dumpJoyStickState() {
-            // 조이스틱 움직임 처리용 (필요시 사용)
-        }
+        function dumpJoyStickState() {}
 
         function addPlayer(self, playerInfo) {
             self.player = self.add.rectangle(playerInfo.x, playerInfo.y, 40, 40, 0xFFFF00);
@@ -151,20 +150,16 @@
                 const speed = 300;
                 this.player.body.setVelocity(0);
 
-                // ** 입력 합치기 (키보드 OR 조이스틱) **
-                // cursors는 조이스틱, this.actualCursors는 실제 키보드
                 const left = cursors.left.isDown || this.actualCursors.left.isDown;
                 const right = cursors.right.isDown || this.actualCursors.right.isDown;
                 const up = cursors.up.isDown || this.actualCursors.up.isDown;
                 const down = cursors.down.isDown || this.actualCursors.down.isDown;
 
-                // 미친 키보드 로직 적용
                 if (left) movePlayer(this.player, keyMap.left, speed);
                 if (right) movePlayer(this.player, keyMap.right, speed);
                 if (up) movePlayer(this.player, keyMap.up, speed);
                 if (down) movePlayer(this.player, keyMap.down, speed);
 
-                // 서버 전송
                 if (this.player.body.velocity.x !== 0 || this.player.body.velocity.y !== 0) {
                     this.socket.emit('playerMovement', { x: this.player.x, y: this.player.y });
                 }
