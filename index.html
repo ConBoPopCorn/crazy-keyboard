@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>미친 키보드 멀티플레이</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script> <style>
+        body { margin: 0; background: #222; display: flex; justify-content: center; align-items: center; height: 100vh; color: white; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+    <script>
+        const config = {
+            type: Phaser.AUTO,
+            width: 800,
+            height: 600,
+            backgroundColor: '#333333',
+            physics: { default: 'arcade', arcade: { debug: false } },
+            scene: { preload: preload, create: create, update: update }
+        };
+
+        const game = new Phaser.Game(config);
+
+        let player; // 나
+        let otherPlayers; // 다른 사람들
+        let cursors;
+        let socket; // 서버 연결선
+        let infoText;
+        let timerText;
+        let keyMap = { left: 'left', right: 'right', up: 'up', down: 'down' };
+        let timeLeft = 3;
+
+        function preload() {}
+
+        function create() {
+            const self = this;
+            this.socket = io(); // 서버에 접속 신호 보냄!
+            this.otherPlayers = this.physics.add.group(); // 다른 사람들 그룹
+
+            // 1. 서버: "현재 접속자 명단 줄게"
+            this.socket.on('currentPlayers', function (players) {
+                Object.keys(players).forEach(function (id) {
+                    if (players[id].playerId === self.socket.id) {
+                        addPlayer(self, players[id]); // 나 만들기
+                    } else {
+                        addOtherPlayers(self, players[id]); // 남 만들기
+                    }
+                });
+            });
+
+            // 2. 서버: "새 친구 들어왔어"
+            this.socket.on('newPlayer', function (playerInfo) {
+                addOtherPlayers(self, playerInfo);
+            });
+
+            // 3. 서버: "누가 나갔어"
+            this.socket.on('disconnect', function (playerId) {
+                self.otherPlayers.getChildren().forEach(function (otherPlayer) {
+                    if (playerId === otherPlayer.playerId) {
+                        otherPlayer.destroy(); // 화면에서 지우기
+                    }
+                });
+            });
+
+            // 4. 서버: "누가 움직였어"
+            this.socket.on('playerMoved', function (playerInfo) {
+                self.otherPlayers.getChildren().forEach(function (otherPlayer) {
+                    if (playerInfo.playerId === otherPlayer.playerId) {
+                        otherPlayer.setPosition(playerInfo.x, playerInfo.y);
+                    }
+                });
+            });
+
+            // UI 텍스트
+            infoText = this.add.text(400, 100, '현재 상태: 정상', { fontSize: '32px', fill: '#FFF' }).setOrigin(0.5);
+            timerText = this.add.text(400, 150, '다음 변경까지: 3초', { fontSize: '24px', fill: '#0F0' }).setOrigin(0.5);
+            this.add.text(400, 550, '친구와 같이 접속해보세요!', { fontSize: '20px', fill: '#AAA' }).setOrigin(0.5);
+
+            // 입력 및 타이머
+            cursors = this.input.keyboard.createCursorKeys();
+            this.time.addEvent({ delay: 1000, callback: updateTimer, callbackScope: this, loop: true });
+        }
+
+        // --- 함수들 ---
+        function addPlayer(self, playerInfo) {
+            // 나는 '노란색'
+            self.player = self.add.rectangle(playerInfo.x, playerInfo.y, 50, 50, 0xFFFF00);
+            self.physics.add.existing(self.player);
+            self.player.body.setCollideWorldBounds(true);
+        }
+
+        function addOtherPlayers(self, playerInfo) {
+            // 남은 '파란색'
+            const otherPlayer = self.add.rectangle(playerInfo.x, playerInfo.y, 50, 50, 0x0000FF);
+            otherPlayer.playerId = playerInfo.playerId;
+            self.otherPlayers.add(otherPlayer);
+        }
+
+        function updateTimer() {
+            timeLeft--;
+            if (timeLeft <= 0) { timeLeft = 3; shuffleKeys(); }
+            timerText.setText('다음 변경까지: ' + timeLeft + '초');
+        }
+
+        function shuffleKeys() {
+            const mode = Phaser.Math.Between(0, 2);
+            if (mode === 0) {
+                keyMap = { left: 'left', right: 'right', up: 'up', down: 'down' };
+                infoText.setText('현재 상태: 정상'); infoText.setColor('#FFF');
+            } else if (mode === 1) {
+                keyMap = { left: 'right', right: 'left', up: 'down', down: 'up' };
+                infoText.setText('현재 상태: 청개구리!'); infoText.setColor('#F00');
+            } else {
+                const keys = ['left', 'right', 'up', 'down'];
+                for (let i = keys.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [keys[i], keys[j]] = [keys[j], keys[i]];
+                }
+                keyMap = { left: keys[0], right: keys[1], up: keys[2], down: keys[3] };
+                infoText.setText('현재 상태: 뒤죽박죽'); infoText.setColor('#FF0');
+            }
+        }
+
+        function update() {
+            if (this.player) {
+                const speed = 300;
+                this.player.body.setVelocity(0);
+
+                // 미친 키보드 로직
+                if (cursors.left.isDown) movePlayer(this.player, keyMap.left, speed);
+                if (cursors.right.isDown) movePlayer(this.player, keyMap.right, speed);
+                if (cursors.up.isDown) movePlayer(this.player, keyMap.up, speed);
+                if (cursors.down.isDown) movePlayer(this.player, keyMap.down, speed);
+
+                // **중요** 내 위치가 바뀌면 서버에 알려줌
+                // (움직일 때만 보내서 성능 최적화)
+                if (this.player.body.velocity.x !== 0 || this.player.body.velocity.y !== 0) {
+                    this.socket.emit('playerMovement', { x: this.player.x, y: this.player.y });
+                }
+            }
+        }
+
+        function movePlayer(player, direction, speed) {
+            if (direction === 'left') player.body.setVelocityX(-speed);
+            if (direction === 'right') player.body.setVelocityX(speed);
+            if (direction === 'up') player.body.setVelocityY(-speed);
+            if (direction === 'down') player.body.setVelocityY(speed);
+        }
+    </script>
+</body>
+</html>
